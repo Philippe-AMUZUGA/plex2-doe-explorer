@@ -1,0 +1,9 @@
+{
+  "Matériau": ["Acier", "Alu"],
+  "Température": [20.0, 120.0],
+  "Pression": [1.0, 2.0, 3.0],
+  "Lubrification": ["Oui", "Non"],
+  "Epaisseur": [0.4, 0.6],
+  "Dureté": [40.0, 60.0, 70.0],
+  "Ra": [0.12, 0.8, 1.6]
+}
