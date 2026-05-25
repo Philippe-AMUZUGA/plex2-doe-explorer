@@ -539,12 +539,13 @@ def _taguchi_all_compatible(factors: Dict[str, List[Any]]) -> List[Tuple[str, pd
 
 SPATIAL_CELL_PIXELS = 34
 FRACTAL_DECAY = 0.62
-SPATIAL_MAX_LEVELS_PER_FACTOR = 6
-SPATIAL_MAX_GRID_CELLS = 20_000
 SPATIAL_AXIS_MIN_COLUMN_WIDTH = 9
 SPATIAL_AXIS_MAX_COLUMN_WIDTH = 30
 SPATIAL_AXIS_MIN_ROW_HEIGHT = 30
 SPATIAL_AXIS_MAX_ROW_HEIGHT = 90
+SPATIAL_MAX_RENDERED_CELLS = 20_000
+EXCEL_MAX_COLUMNS = 16_384
+EXCEL_MAX_ROWS = 1_048_576
 
 
 def _is_run_column(column: Any) -> bool:
@@ -556,6 +557,14 @@ def _is_full_factorial_plan(type_label: str) -> bool:
 
 
 def _value_key(value: Any) -> tuple[str, str]:
+    if isinstance(value, (int, float, np.number)) and not isinstance(value, (bool, np.bool_)):
+        try:
+            numeric_value = float(value)
+        except (TypeError, ValueError):
+            pass
+        else:
+            if not math.isnan(numeric_value):
+                return "numeric", repr(numeric_value)
     return type(value).__name__, repr(value)
 
 
@@ -596,73 +605,18 @@ def _all_numeric(values: list[Any]) -> bool:
     return all(isinstance(value, (int, float, np.number)) and not isinstance(value, (bool, np.bool_)) for value in values)
 
 
-def _build_numeric_axis(column: Any, values: list[Any], max_levels: int) -> dict[str, Any]:
-    numeric_values = sorted(float(value) for value in values)
-    compact_values: list[float] = []
-    for value in numeric_values:
-        if not compact_values or not math.isclose(value, compact_values[-1]):
-            compact_values.append(value)
-
-    if len(compact_values) <= max_levels:
-        return {
-            "column": column,
-            "name": str(column),
-            "kind": "numeric",
-            "levels": compact_values,
-            "labels": [_format_visual_value(value) for value in compact_values],
-        }
-
-    bins = np.array_split(np.array(compact_values, dtype=float), max_levels)
-    ranges: list[tuple[float, float]] = []
-    labels: list[str] = []
-    for part in bins:
-        lo = float(part[0])
-        hi = float(part[-1])
-        ranges.append((lo, hi))
-        labels.append(_format_visual_value(lo) if math.isclose(lo, hi) else f"{_format_visual_value(lo)} - {_format_visual_value(hi)}")
-    return {
-        "column": column,
-        "name": str(column),
-        "kind": "numeric_bins",
-        "levels": ranges,
-        "labels": labels,
-    }
-
-
-def _build_categorical_axis(column: Any, values: list[Any], max_levels: int) -> dict[str, Any]:
-    if len(values) <= max_levels:
-        return {
-            "column": column,
-            "name": str(column),
-            "kind": "categorical",
-            "levels": values,
-            "labels": [_format_visual_value(value) for value in values],
-            "index": {_value_key(value): idx for idx, value in enumerate(values)},
-        }
-
-    chunk_size = math.ceil(len(values) / max_levels)
-    groups = [values[idx: idx + chunk_size] for idx in range(0, len(values), chunk_size)]
-    index: dict[tuple[str, str], int] = {}
-    labels: list[str] = []
-    for group_idx, group in enumerate(groups):
-        for value in group:
-            index[_value_key(value)] = group_idx
-        labels.append(_format_visual_value(group[0]) if len(group) == 1 else f"{_format_visual_value(group[0])}...{_format_visual_value(group[-1])}")
-    return {
-        "column": column,
-        "name": str(column),
-        "kind": "categorical_groups",
-        "levels": groups,
-        "labels": labels,
-        "index": index,
-    }
-
-
-def _build_visual_axis(column: Any, series: pd.Series, max_levels: int) -> dict[str, Any]:
+def _build_visual_axis(column: Any, series: pd.Series) -> dict[str, Any]:
     values = _unique_nonblank_values(series)
     if _all_numeric(values):
-        return _build_numeric_axis(column, values, max_levels)
-    return _build_categorical_axis(column, values, max_levels)
+        values = sorted(values, key=lambda value: float(value))
+    return {
+        "column": column,
+        "name": str(column),
+        "kind": "discrete",
+        "levels": values,
+        "labels": [_format_visual_value(value) for value in values],
+        "index": {_value_key(value): idx for idx, value in enumerate(values)},
+    }
 
 
 def _axis_level_count(axis: dict[str, Any]) -> int:
@@ -672,24 +626,6 @@ def _axis_level_count(axis: dict[str, Any]) -> int:
 def _axis_value_index(axis: dict[str, Any], value: Any) -> int:
     if _is_blank_value(value):
         return 0
-    if axis["kind"] == "numeric":
-        try:
-            numeric_value = float(value)
-        except (TypeError, ValueError):
-            return 0
-        for idx, level in enumerate(axis["levels"]):
-            if math.isclose(numeric_value, float(level), rel_tol=1e-9, abs_tol=1e-9):
-                return idx
-        return int(np.argmin([abs(numeric_value - float(level)) for level in axis["levels"]]))
-    if axis["kind"] == "numeric_bins":
-        try:
-            numeric_value = float(value)
-        except (TypeError, ValueError):
-            return 0
-        for idx, (_lo, hi) in enumerate(axis["levels"]):
-            if numeric_value <= hi or idx == len(axis["levels"]) - 1:
-                return idx
-        return len(axis["levels"]) - 1
     return int(axis.get("index", {}).get(_value_key(value), 0))
 
 
@@ -702,30 +638,22 @@ def _axis_strides(axes: list[dict[str, Any]]) -> tuple[list[int], int]:
     return strides, max(1, size)
 
 
-def _axis_grid_cell_count(axes: list[dict[str, Any]]) -> int:
-    total = 1
-    for axis in axes:
-        total *= _axis_level_count(axis)
-    return total
+def _visualization_skip_message(width: int, height: int) -> str | None:
+    cell_count = width * height
+    if cell_count > SPATIAL_MAX_RENDERED_CELLS:
+        return (
+            "Visualisation non générée : trop de cellules dans la grille exacte. "
+            f"Grille exacte calculée = {width} x {height} ({cell_count:,} cellules). "
+            "Aucun niveau n'est fusionné."
+        )
+    return None
 
 
 def _build_visual_axes(df: pd.DataFrame) -> list[dict[str, Any]]:
     factor_columns = [col for col in df.columns if not _is_run_column(col)]
     if not factor_columns:
         return []
-
-    max_levels = SPATIAL_MAX_LEVELS_PER_FACTOR
-    axes = [_build_visual_axis(col, df[col], max_levels) for col in factor_columns]
-    if _axis_grid_cell_count(axes) <= SPATIAL_MAX_GRID_CELLS:
-        return axes
-
-    max_levels = max(2, int(SPATIAL_MAX_GRID_CELLS ** (1 / len(factor_columns))))
-    while max_levels > 2:
-        axes = [_build_visual_axis(col, df[col], max_levels) for col in factor_columns]
-        if _axis_grid_cell_count(axes) <= SPATIAL_MAX_GRID_CELLS:
-            return axes
-        max_levels -= 1
-    return [_build_visual_axis(col, df[col], 2) for col in factor_columns]
+    return [_build_visual_axis(col, df[col]) for col in factor_columns]
 
 
 def _encode_visualization_column(series: pd.Series) -> np.ndarray:
@@ -922,6 +850,21 @@ def _add_spatial_visualization(ws, type_label: str, max_runs: int, base_color: s
     x_label_start = grid_bottom + 1
     end_row = x_label_start + max(1, len(x_axes)) - 1
     end_col = data_left + width - 1
+    skip_message = _visualization_skip_message(width, height)
+    if skip_message is None and (end_col > EXCEL_MAX_COLUMNS or end_row > EXCEL_MAX_ROWS):
+        skip_message = (
+            "Visualisation non générée : trop de niveaux distincts pour les limites d'Excel. "
+            f"Grille exacte calculée = {width} x {height}. Aucun niveau n'est fusionné."
+        )
+    if skip_message is not None:
+        note_cell = ws.cell(row=start_row, column=start_col)
+        note_cell.value = skip_message
+        note_cell.font = Font(name="Arial", bold=True, color="C00000", size=10)
+        note_cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
+        ws.column_dimensions[get_column_letter(start_col)].width = 60
+        ws.row_dimensions[start_row].height = 36
+        return
+
     cell_height = SPATIAL_CELL_PIXELS * 0.75
     cell_width = max(2.5, (SPATIAL_CELL_PIXELS - 5) / 7)
     center = Alignment(horizontal="center", vertical="center")
@@ -1622,6 +1565,7 @@ def build_doe_explorer(
         for sname, df, _ in sheets:
             df.to_excel(writer, sheet_name=sname, index=False)
 
+    _progress(90, "Application du format Excel")
     _format_workbook(
         outfile,
         sheet_meta,
