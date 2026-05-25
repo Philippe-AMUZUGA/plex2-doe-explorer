@@ -12,12 +12,15 @@ Application Windows pour explorer et exporter des plans d'expériences vers Exce
 - Interface graphique Tkinter orientée utilisateurs non-techniques.
 - Génération multi-plans dans un seul fichier Excel formaté.
 - Plans pris en charge : factoriel complet, fractionnaires, Plackett-Burman, DSD, OFAT, Taguchi, GSD, CCD, Box-Behnken, Doehlert, LHS automatique.
+- Plans space-filling discrets sur les niveaux utilisateur : maximin rapide et projection maximin inspirée MaxPro.
+- Visualisation Excel optionnelle avec repères facteurs/niveaux et cellules d'essais colorées selon le séquencement.
 - Tri automatique du résumé Excel :
   1. plans nominaux,
   2. plans avec avertissement `⚠`,
   3. plans `⚠ OMIS` en fin de liste.
 - Mise en évidence systématique des adaptations : `⚠ REFORMATAGE`, `⚠ OMIS`, `⚠ LHS`.
-- LHS automatique borné pour éviter des tailles incohérentes sur de gros jeux d'entrée.
+- Limite de génération par défaut à 99 essais par plan pour garder des exports rapides et lisibles.
+- Export par défaut dans le dossier `examples/`.
 
 ## Lancement rapide Windows
 
@@ -59,14 +62,13 @@ Lancer_PLEX2.bat
 requirements.txt
 README.md
 USER_GUIDE.md
-AUDIT_FINAL.md
 LICENSE
 ```
 
 ## Notes techniques
 
-- `plex2_core.py` contient le moteur DOE et la logique Excel.
-- `plex2_gui.py` contient l'interface Windows et la gestion ergonomique du redimensionnement.
+- `plex2_core.py` contient le moteur DOE, les plans space-filling et la logique Excel.
+- `plex2_gui.py` contient l'interface Windows, la visualisation optionnelle et la gestion ergonomique du redimensionnement.
 - La feuille `00_RESUME` suit strictement l'ordre des onglets générés.
 - Les plans omis n'ont pas d'onglet et sont volontairement listés en fin de résumé avec `Feuille = —`.
 
@@ -78,5 +80,4 @@ Contenu recommandé pour la première publication :
 - le `README.md`,
 - le `LICENSE`,
 - le `USER_GUIDE.md`,
-- le `AUDIT_FINAL.md`,
 - un ZIP de release prêt à l'emploi pour Windows.

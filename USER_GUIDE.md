@@ -24,7 +24,12 @@ Vous pouvez aussi :
 Dans le panneau **Génération** :
 
 - indiquez le nom du fichier `.xlsx`,
-- définissez si besoin le seuil maximum du plan factoriel complet.
+- définissez si besoin la limite du nombre d'expériences.
+
+Dans le panneau **Visualisation** :
+
+- cochez **Activer la visualisation dans l'Excel** si vous voulez ajouter une carte visuelle dans les feuilles de plans,
+- gardez ou adaptez le nombre maximal d'essais autorisé pour la visualisation.
 
 ## 4. Générer le DOE
 
@@ -34,13 +39,16 @@ Le fichier produit contient :
 
 - une feuille `00_RESUME`,
 - les onglets de plans générés dans le bon ordre,
-- les avertissements `⚠` si l'outil a dû adapter ou omettre un plan.
+- les avertissements `⚠` si l'outil a dû adapter ou omettre un plan,
+- si l'option est activée, une visualisation à côté du tableau des essais.
 
 ## 5. Comprendre les mentions d'avertissement
 
 - `⚠ REFORMATAGE` : le plan a nécessité une adaptation des niveaux ou des facteurs.
 - `⚠ OMIS` : le plan n'a pas été généré.
 - `⚠ LHS` : le Latin Hypercube a été calculé automatiquement.
+
+Les plans **Space-Filling maximin** et **Space-Filling projection maximin** donnent deux répartitions candidates sur les niveaux exacts utilisateur. La visualisation aide à choisir celle qui couvre le mieux l'espace expérimental.
 
 ## 6. Sauvegarder / recharger vos paramètres
 

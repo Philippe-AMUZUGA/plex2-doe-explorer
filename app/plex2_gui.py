@@ -5,6 +5,7 @@ import ctypes
 import json
 import queue
 import string
+import sys
 import threading
 from pathlib import Path
 import tkinter as tk
@@ -34,28 +35,14 @@ class ScrollableFrame(ttk.Frame):
         self.canvas.configure(yscrollcommand=self.vsb.set)
         self.inner = ttk.Frame(self.canvas)
         self.window_id = self.canvas.create_window((0, 0), window=self.inner, anchor="nw")
-
         self.canvas.grid(row=0, column=0, sticky="nsew")
         self.vsb.grid(row=0, column=1, sticky="ns")
         self.grid_rowconfigure(0, weight=1)
         self.grid_columnconfigure(0, weight=1)
-
-        self.inner.bind("<Configure>", self._on_inner_configure)
-        self.canvas.bind("<Configure>", self._on_canvas_configure)
-        self.canvas.bind("<Enter>", self._bind_mousewheel)
-        self.canvas.bind("<Leave>", self._unbind_mousewheel)
-
-    def _on_inner_configure(self, _event=None):
-        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
-
-    def _on_canvas_configure(self, event):
-        self.canvas.itemconfigure(self.window_id, width=event.width)
-
-    def _bind_mousewheel(self, _event=None):
-        self.canvas.bind_all("<MouseWheel>", self._on_mousewheel)
-
-    def _unbind_mousewheel(self, _event=None):
-        self.canvas.unbind_all("<MouseWheel>")
+        self.inner.bind("<Configure>", lambda _e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
+        self.canvas.bind("<Configure>", lambda e: self.canvas.itemconfigure(self.window_id, width=e.width))
+        self.canvas.bind("<Enter>", lambda _e: self.canvas.bind_all("<MouseWheel>", self._on_mousewheel))
+        self.canvas.bind("<Leave>", lambda _e: self.canvas.unbind_all("<MouseWheel>"))
 
     def _on_mousewheel(self, event):
         try:
@@ -69,30 +56,31 @@ class PLEX2App(tk.Tk):
         self._set_windows_dpi_awareness()
         super().__init__()
         self.title(WINDOW_TITLE)
+        self._set_app_icon()
         self.configure(bg=BG)
         self.resizable(True, True)
-        self._set_initial_geometry()
+        self.geometry("1180x760")
         self.minsize(960, 620)
 
         self.factor_map: dict[str, list] = {}
         self.selected_factor_name: str | None = None
         self.log_queue: queue.Queue[tuple[str, str]] = queue.Queue()
         self._action_buttons: list[ttk.Button] = []
-        self._configure_job = None
 
-        self.output_var = tk.StringVar(value=str(Path.cwd() / "PLEX2_plans.xlsx"))
-        self.max_full_var = tk.StringVar(value="30000")
+        self.output_var = tk.StringVar(value=str(Path.cwd() / "examples" / "PLEX2_plans.xlsx"))
+        self.max_plan_runs_var = tk.StringVar(value="99")
+        self.enable_spatial_visualization_var = tk.BooleanVar(value=False)
+        self.spatial_visualization_max_runs_var = tk.StringVar(value="99")
         self.uniform_k_var = tk.StringVar(value="5")
         self.uniform_l_var = tk.StringVar(value="3")
         self.status_var = tk.StringVar(value="Prêt")
+        self.progress_var = tk.IntVar(value=0)
         self.credit_var = tk.StringVar(value=FOOTER_CREDIT)
 
-        self._set_icon()
         self._build_style()
         self._build_ui()
         self._load_example()
         self.after(150, self._poll_logs)
-        self.bind("<Configure>", self._debounced_layout_guard)
 
     @staticmethod
     def _set_windows_dpi_awareness() -> None:
@@ -104,56 +92,33 @@ class PLEX2App(tk.Tk):
             except Exception:
                 pass
 
-    def _set_initial_geometry(self) -> None:
-        self.update_idletasks()
-        screen_w = self.winfo_screenwidth()
-        screen_h = self.winfo_screenheight()
-        ratio_w = min(int(screen_w * 0.88), 1366)
-        ratio_h = int(ratio_w * 9 / 16)
-        if ratio_h > int(screen_h * 0.86):
-            ratio_h = min(int(screen_h * 0.86), 820)
-            ratio_w = int(ratio_h * 16 / 9)
-        x = max(0, (screen_w - ratio_w) // 2)
-        y = max(0, (screen_h - ratio_h) // 2)
-        self.geometry(f"{ratio_w}x{ratio_h}+{x}+{y}")
+    def _asset_path(self, filename: str) -> Path:
+        app_dir = Path(__file__).resolve().parent
+        bundled_root = Path(getattr(sys, "_MEIPASS", app_dir))
+        candidates = [
+            bundled_root / "assets" / filename,
+            app_dir / "assets" / filename,
+        ]
+        for candidate in candidates:
+            if candidate.exists():
+                return candidate
+        return candidates[-1]
 
-    def _guard_geometry(self) -> None:
+    def _set_app_icon(self) -> None:
         try:
-            min_w = min(960, max(760, self.winfo_screenwidth() - 80))
-            min_h = min(620, max(560, self.winfo_screenheight() - 80))
-            w = max(self.winfo_width(), min_w)
-            h = max(self.winfo_height(), min_h)
-            screen_w = max(self.winfo_screenwidth(), 1024)
-            screen_h = max(self.winfo_screenheight(), 700)
-            max_w = max(min_w, int(screen_w * 0.98))
-            max_h = max(min_h, int(screen_h * 0.94))
-            if w > max_w or h > max_h:
-                w = min(w, max_w)
-                h = min(h, max_h)
-                x = max(0, min(self.winfo_x(), screen_w - w))
-                y = max(0, min(self.winfo_y(), screen_h - h))
-                self.geometry(f"{w}x{h}+{x}+{y}")
-            self._relayout_columns()
+            icon_ico = self._asset_path("plex2_icon.ico")
+            if icon_ico.exists():
+                self.iconbitmap(str(icon_ico))
+                return
         except tk.TclError:
             pass
 
-    def _debounced_layout_guard(self, _event=None) -> None:
-        if self._configure_job is not None:
-            self.after_cancel(self._configure_job)
-        self._configure_job = self.after(120, self._guard_geometry)
-
-    def _set_icon(self) -> None:
-        assets_dir = Path(__file__).resolve().parent / "assets"
-        png_path = assets_dir / "plex2_icon.png"
-        ico_path = assets_dir / "plex2_icon.ico"
         try:
-            self.iconbitmap(default=str(ico_path))
-        except Exception:
-            pass
-        try:
-            self._icon_photo = tk.PhotoImage(file=str(png_path))
-            self.iconphoto(True, self._icon_photo)
-        except Exception:
+            icon_png = self._asset_path("plex2_icon.png")
+            if icon_png.exists():
+                self._app_icon_image = tk.PhotoImage(file=str(icon_png))
+                self.iconphoto(True, self._app_icon_image)
+        except tk.TclError:
             pass
 
     def _build_style(self) -> None:
@@ -162,213 +127,155 @@ class PLEX2App(tk.Tk):
             style.theme_use("clam")
         except tk.TclError:
             pass
-
         self.option_add("*Font", "{Segoe UI} 11")
         style.configure("TFrame", background=BG)
-        style.configure("TLabel", background=BG, foreground=TEXT, font=("Segoe UI", 11))
-        style.configure("Muted.TLabel", background=BG, foreground=MUTED, font=("Segoe UI", 11))
-        style.configure("Title.TLabel", background=BG, foreground=TEXT, font=("Segoe UI Semibold", 24))
-        style.configure("Subtitle.TLabel", background=BG, foreground=MUTED, font=("Segoe UI", 12))
+        style.configure("TLabel", background=BG, foreground=TEXT)
+        style.configure("Muted.TLabel", background=BG, foreground=MUTED)
+        style.configure("Title.TLabel", background=BG, foreground=TEXT, font=("Segoe UI Semibold", 22))
         style.configure("Card.TLabelframe", background=CARD, bordercolor=BORDER, relief="solid")
         style.configure("Card.TLabelframe.Label", background=CARD, foreground=TEXT, font=("Segoe UI Semibold", 12))
-        style.configure("TButton", font=("Segoe UI Semibold", 11), padding=(12, 8))
-        style.configure("Accent.TButton", background=ACCENT, foreground="#FFFFFF", borderwidth=0)
-        style.map("Accent.TButton", background=[("pressed", ACCENT_DARK), ("active", ACCENT_DARK)], foreground=[("disabled", "#EAF1F7")])
-        style.configure("Treeview", background=CARD, fieldbackground=CARD, foreground=TEXT, rowheight=34, font=("Segoe UI", 11), bordercolor=BORDER)
-        style.configure("Treeview.Heading", background="#E8EEF5", foreground=TEXT, font=("Segoe UI Semibold", 11), relief="flat")
-        style.map("Treeview", background=[("selected", "#D9E7F5")], foreground=[("selected", TEXT)])
-        style.configure("TCheckbutton", background=CARD, foreground=TEXT, font=("Segoe UI", 11))
-        style.configure("Status.TLabel", background=BG, foreground=MUTED, font=("Segoe UI", 11))
-        style.configure("Vertical.TScrollbar", arrowsize=18)
-        style.configure("Horizontal.TScrollbar", arrowsize=18)
+        style.configure("TButton", font=("Segoe UI Semibold", 11), padding=(10, 7))
+        style.configure("Accent.TButton", background=ACCENT, foreground="#FFFFFF")
+        style.map("Accent.TButton", background=[("pressed", ACCENT_DARK), ("active", ACCENT_DARK)])
+        style.configure("Treeview", background=CARD, fieldbackground=CARD, foreground=TEXT, rowheight=32)
+        style.configure("Treeview.Heading", background="#E8EEF5", foreground=TEXT, font=("Segoe UI Semibold", 10))
 
     def _build_ui(self) -> None:
         self.grid_rowconfigure(0, weight=1)
         self.grid_columnconfigure(0, weight=1)
-
         outer = ttk.Frame(self, padding=(18, 16, 18, 12))
         outer.grid(row=0, column=0, sticky="nsew")
         outer.grid_rowconfigure(1, weight=1)
         outer.grid_columnconfigure(0, weight=1)
 
-        header = ttk.Frame(outer)
-        header.grid(row=0, column=0, sticky="ew", pady=(0, 12))
-        header.grid_columnconfigure(0, weight=1)
-        title_line = ttk.Frame(header)
-        title_line.grid(row=0, column=0, sticky="w")
-        # ttk.Label(title_line, text=APP_NAME, style="Title.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Label(title_line, text=APP_SUBTITLE, style="Title.TLabel").grid(row=0, column=0, sticky="w")
-        # ttk.Label(title_line, text=APP_SUBTITLE, style="Subtitle.TLabel").grid(row=0, column=1, sticky="w", padx=(14, 0), pady=(6, 0))
+        ttk.Label(outer, text=APP_SUBTITLE, style="Title.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 12))
 
-        main = ttk.Frame(outer)
-        main.grid(row=1, column=0, sticky="nsew")
+        scroll_area = ScrollableFrame(outer)
+        scroll_area.grid(row=1, column=0, sticky="nsew")
+        main = ttk.Frame(scroll_area.inner)
+        main.grid(row=0, column=0, sticky="nsew")
+        scroll_area.inner.grid_rowconfigure(0, weight=1)
+        scroll_area.inner.grid_columnconfigure(0, weight=1)
+        main.grid_columnconfigure(0, weight=2)
+        main.grid_columnconfigure(1, weight=1)
         main.grid_rowconfigure(0, weight=1)
-        main.grid_columnconfigure(0, weight=1)
 
-        self.scrollable = ScrollableFrame(main)
-        self.scrollable.grid(row=0, column=0, sticky="nsew")
+        left = ttk.Frame(main)
+        right = ttk.Frame(main)
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+        right.grid(row=0, column=1, sticky="nsew", padx=(10, 0))
+        left.grid_columnconfigure(0, weight=1)
+        right.grid_columnconfigure(0, weight=1)
 
-        body = self.scrollable.inner
-        body.configure(style="TFrame")
-        body.grid_columnconfigure(0, weight=1)
-        body.grid_columnconfigure(1, weight=1)
-        body.grid_rowconfigure(0, weight=1)
-        body.grid_rowconfigure(1, weight=1)
-
-        self.left = ttk.Frame(body)
-        self.right = ttk.Frame(body)
-        self.left.grid_columnconfigure(0, weight=1)
-        self.right.grid_columnconfigure(0, weight=1)
-
-        self._build_left_panel(self.left)
-        self._build_right_panel(self.right)
-        self.scrollable.canvas.bind("<Configure>", self._on_scroll_canvas_configure, add="+")
-        self.after(50, self._relayout_columns)
+        self._build_left_panel(left)
+        self._build_right_panel(right)
 
         footer = ttk.Frame(outer)
         footer.grid(row=2, column=0, sticky="ew", pady=(10, 0))
         footer.grid_columnconfigure(0, weight=1)
         footer.grid_columnconfigure(1, weight=0)
-        ttk.Separator(footer).grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 10))
-        ttk.Label(footer, textvariable=self.status_var, style="Status.TLabel").grid(row=1, column=0, sticky="w")
-        ttk.Label(footer, textvariable=self.credit_var, style="Status.TLabel").grid(row=1, column=1, sticky="e")
-
-    def _on_scroll_canvas_configure(self, _event=None) -> None:
-        self._relayout_columns()
-
-    def _relayout_columns(self) -> None:
-        try:
-            width = max(self.scrollable.canvas.winfo_width(), self.winfo_width() - 80)
-        except Exception:
-            width = self.winfo_width()
-
-        if width < 1220:
-            self.left.grid_forget()
-            self.right.grid_forget()
-            self.left.grid(row=0, column=0, sticky="nsew", padx=0, pady=(0, 10))
-            self.right.grid(row=1, column=0, sticky="nsew", padx=0, pady=0)
-        else:
-            self.left.grid_forget()
-            self.right.grid_forget()
-            self.left.grid(row=0, column=0, sticky="nsew", padx=(0, 10), pady=0)
-            self.right.grid(row=0, column=1, sticky="nsew", padx=(10, 0), pady=0)
+        ttk.Separator(footer).grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+        ttk.Label(footer, textvariable=self.status_var).grid(row=1, column=0, sticky="w")
+        ttk.Label(footer, textvariable=self.credit_var).grid(row=1, column=1, sticky="e")
 
     def _build_left_panel(self, parent: ttk.Frame) -> None:
-        factors_box = ttk.LabelFrame(parent, text="Table des Facteurs", style="Card.TLabelframe", padding=(14, 14, 14, 14))
-        factors_box.grid(row=0, column=0, sticky="nsew")
+        factors_box = ttk.LabelFrame(parent, text="Table des Facteurs", style="Card.TLabelframe", padding=12)
+        factors_box.grid(row=0, column=0, sticky="ew")
         factors_box.grid_columnconfigure(0, weight=1)
-        factors_box.grid_rowconfigure(0, weight=1)
+        parent.grid_rowconfigure(0, weight=0)
 
-        tree_wrap = ttk.Frame(factors_box)
-        tree_wrap.grid(row=0, column=0, sticky="nsew")
-        tree_wrap.grid_columnconfigure(0, weight=1)
-        tree_wrap.grid_rowconfigure(0, weight=1)
-
-        self.tree = ttk.Treeview(tree_wrap, columns=("name", "levels", "count", "type"), show="headings", selectmode="browse")
-        self.tree.heading("name", text="Facteur")
-        self.tree.heading("levels", text="Niveaux")
-        self.tree.heading("count", text="Nb")
-        self.tree.heading("type", text="Type")
-        self.tree.column("name", width=160, minwidth=120, stretch=False)
-        self.tree.column("levels", width=460, minwidth=220, stretch=True)
-        self.tree.column("count", width=65, minwidth=55, anchor="center", stretch=False)
-        self.tree.column("type", width=130, minwidth=100, anchor="center", stretch=False)
-        self.tree.grid(row=0, column=0, sticky="nsew")
+        self.tree = ttk.Treeview(factors_box, columns=("name", "levels", "count", "type"), show="headings", selectmode="browse", height=8)
+        for col, label, width in [("name", "Facteur", 150), ("levels", "Niveaux", 360), ("count", "Nb", 55), ("type", "Type", 110)]:
+            self.tree.heading(col, text=label)
+            self.tree.column(col, width=width, anchor="center" if col in {"count", "type"} else "w")
+        self.tree.grid(row=0, column=0, sticky="ew")
         self.tree.bind("<<TreeviewSelect>>", self._on_tree_select)
-        self.tree.bind("<Double-1>", self._on_tree_select)
+        ttk.Scrollbar(factors_box, orient="vertical", command=self.tree.yview).grid(row=0, column=1, sticky="ns")
 
-        tree_scroll = ttk.Scrollbar(tree_wrap, orient="vertical", command=self.tree.yview)
-        tree_scroll.grid(row=0, column=1, sticky="ns")
-        self.tree.configure(yscrollcommand=tree_scroll.set)
-
-        editor = ttk.LabelFrame(parent, text="Édition du facteur", style="Card.TLabelframe", padding=(14, 14, 14, 14))
-        editor.grid(row=1, column=0, sticky="ew", pady=(10, 10))
-        editor.grid_columnconfigure(0, weight=0, minsize=205)
+        editor = ttk.LabelFrame(parent, text="Édition du facteur", style="Card.TLabelframe", padding=12)
+        editor.grid(row=1, column=0, sticky="ew", pady=(10, 0))
         editor.grid_columnconfigure(1, weight=1)
-        editor.grid_rowconfigure(2, weight=1)
-
-        ttk.Label(editor, text="Nom du facteur", style="Muted.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Label(editor, text="Niveaux (une valeur par ligne, ou séparés par ; , |)", style="Muted.TLabel").grid(row=0, column=1, sticky="w", padx=(12, 0))
-
+        ttk.Label(editor, text="Nom", style="Muted.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(editor, text="Niveaux", style="Muted.TLabel").grid(row=0, column=1, sticky="w", padx=(10, 0))
         self.factor_name_var = tk.StringVar()
-        name_entry = ttk.Entry(editor, textvariable=self.factor_name_var)
-        name_entry.grid(row=1, column=0, sticky="ew", padx=(0, 12), pady=(4, 0))
-        name_entry.bind("<Return>", lambda _e: self._add_or_update_factor())
+        ttk.Entry(editor, textvariable=self.factor_name_var, width=20).grid(row=1, column=0, sticky="ew", padx=(0, 10))
+        self.levels_text = ScrolledText(editor, height=5, font=("Consolas", 10), wrap="word")
+        self.levels_text.grid(row=1, column=1, sticky="ew")
+        row = ttk.Frame(editor)
+        row.grid(row=2, column=0, columnspan=2, sticky="w", pady=(10, 0))
+        for text, cmd, style in [("Ajouter / Modifier", self._add_or_update_factor, "Accent.TButton"), ("Supprimer", self._delete_selected_factor, "TButton"), ("Vider", self._clear_editor, "TButton")]:
+            btn = ttk.Button(row, text=text, command=cmd, style=style)
+            btn.pack(side="left", padx=(0, 8))
+            self._action_buttons.append(btn)
 
-        self.levels_text = ScrolledText(editor, height=6, width=28, wrap="word", font=("Consolas", 11), relief="solid", borderwidth=1)
-        self.levels_text.grid(row=1, column=1, rowspan=2, sticky="nsew", pady=(4, 0))
-        self.levels_text.configure(highlightthickness=1, highlightbackground=BORDER, highlightcolor=ACCENT, padx=10, pady=10)
+        quick = ttk.LabelFrame(parent, text="Création rapide", style="Card.TLabelframe", padding=12)
+        quick.grid(row=2, column=0, sticky="ew", pady=(10, 0))
+        ttk.Label(quick, text="Facteurs", style="Muted.TLabel").grid(row=0, column=0)
+        ttk.Label(quick, text="Niveaux", style="Muted.TLabel").grid(row=0, column=1, padx=(10, 0))
+        ttk.Entry(quick, textvariable=self.uniform_k_var, width=8).grid(row=1, column=0)
+        ttk.Entry(quick, textvariable=self.uniform_l_var, width=8).grid(row=1, column=1, padx=(10, 0))
+        btn = ttk.Button(quick, text="Générer", command=self._generate_uniform_factors)
+        btn.grid(row=1, column=2, padx=(10, 0))
+        self._action_buttons.append(btn)
 
-        button_row = ttk.Frame(editor)
-        button_row.grid(row=2, column=0, sticky="ew", pady=(12, 0))
-        save_btn = ttk.Button(button_row, text="Ajouter", style="Accent.TButton", command=self._add_or_update_factor)
-        delete_btn = ttk.Button(button_row, text="Supprimer", command=self._delete_selected_factor)
-        clear_btn = ttk.Button(button_row, text="Vider", command=self._clear_editor)
-        save_btn.grid(row=0, column=0, sticky="w")
-        delete_btn.grid(row=0, column=1, sticky="w", padx=(8, 0))
-        clear_btn.grid(row=0, column=2, sticky="w", padx=(8, 0))
-        self._action_buttons.extend([save_btn, delete_btn, clear_btn])
-
-        quick = ttk.LabelFrame(parent, text="Création rapide", style="Card.TLabelframe", padding=(14, 14, 14, 14))
-        quick.grid(row=2, column=0, sticky="ew")
-        for idx in range(4):
-            quick.grid_columnconfigure(idx, weight=1 if idx == 3 else 0)
-
-        ttk.Label(quick, text="Nombre de facteurs", style="Muted.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Label(quick, text="Niveaux par facteur", style="Muted.TLabel").grid(row=0, column=1, sticky="w", padx=(12, 0))
-        ttk.Entry(quick, textvariable=self.uniform_k_var, width=10).grid(row=1, column=0, sticky="w", pady=(4, 0))
-        ttk.Entry(quick, textvariable=self.uniform_l_var, width=10).grid(row=1, column=1, sticky="w", padx=(12, 0), pady=(4, 0))
-        uniform_btn = ttk.Button(quick, text="Générer", command=self._generate_uniform_factors)
-        uniform_btn.grid(row=1, column=2, sticky="w", padx=(12, 0), pady=(4, 0))
-        self._action_buttons.extend([uniform_btn])
+        summary = ttk.LabelFrame(parent, text="Résumé", style="Card.TLabelframe", padding=12)
+        summary.grid(row=3, column=0, sticky="ew", pady=(10, 0))
+        self.summary_text = ScrolledText(summary, wrap="word", height=8, font=("Consolas", 10))
+        self.summary_text.pack(fill="both", expand=True)
+        self.summary_text.configure(state="disabled")
 
     def _build_right_panel(self, parent: ttk.Frame) -> None:
-        settings = ttk.LabelFrame(parent, text="Génération", style="Card.TLabelframe", padding=(14, 14, 14, 14))
+        settings = ttk.LabelFrame(parent, text="Génération", style="Card.TLabelframe", padding=12)
         settings.grid(row=0, column=0, sticky="ew")
         settings.grid_columnconfigure(0, weight=1)
-
         ttk.Label(settings, text="Fichier Excel de sortie", style="Muted.TLabel").grid(row=0, column=0, sticky="w")
-        output_row = ttk.Frame(settings)
-        output_row.grid(row=1, column=0, sticky="ew", pady=(4, 0))
-        output_row.grid_columnconfigure(0, weight=1)
-        ttk.Entry(output_row, textvariable=self.output_var).grid(row=0, column=0, sticky="ew", padx=(0, 8))
-        browse_btn = ttk.Button(output_row, text="Parcourir", command=self._choose_output)
-        browse_btn.grid(row=0, column=1, sticky="e")
-        self._action_buttons.append(browse_btn)
+        row = ttk.Frame(settings)
+        row.grid(row=1, column=0, sticky="ew", pady=(4, 0))
+        row.grid_columnconfigure(0, weight=1)
+        ttk.Entry(row, textvariable=self.output_var).grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        btn = ttk.Button(row, text="Parcourir", command=self._choose_output)
+        btn.grid(row=0, column=1)
+        self._action_buttons.append(btn)
+        ttk.Label(settings, text="Limiter le nombre d'expériences", style="Muted.TLabel").grid(row=2, column=0, sticky="w", pady=(12, 0))
+        ttk.Entry(settings, textvariable=self.max_plan_runs_var, width=14).grid(row=3, column=0, sticky="w", pady=(4, 0))
 
-        ttk.Label(settings, text="Seuil max factoriel complet", style="Muted.TLabel").grid(row=2, column=0, sticky="w", pady=(12, 0))
-        ttk.Entry(settings, textvariable=self.max_full_var, width=14).grid(row=3, column=0, sticky="w", pady=(4, 0))
+        visu = ttk.LabelFrame(parent, text="Visualisation", style="Card.TLabelframe", padding=12)
+        visu.grid(row=1, column=0, sticky="ew", pady=(10, 0))
+        visu.grid_columnconfigure(0, weight=1)
+        ttk.Checkbutton(
+            visu,
+            text="Activer la visualisation dans l'Excel",
+            variable=self.enable_spatial_visualization_var,
+        ).grid(row=0, column=0, sticky="w")
+        ttk.Label(
+            visu,
+            text="Nombre maximal d'essais autorisé pour la visualisation",
+            style="Muted.TLabel",
+        ).grid(row=1, column=0, sticky="w", pady=(12, 0))
+        ttk.Entry(visu, textvariable=self.spatial_visualization_max_runs_var, width=14).grid(row=2, column=0, sticky="w", pady=(4, 0))
 
-        actions = ttk.LabelFrame(parent, text="Actions", style="Card.TLabelframe", padding=(14, 14, 14, 14))
-        actions.grid(row=1, column=0, sticky="ew", pady=(10, 10))
+        actions = ttk.LabelFrame(parent, text="Actions", style="Card.TLabelframe", padding=12)
+        actions.grid(row=2, column=0, sticky="ew", pady=(10, 0))
         actions.grid_columnconfigure(0, weight=1)
+        for text, cmd, style in [("Générer le fichier Excel", self._start_generation, "Accent.TButton"), ("Exporter les facteurs en JSON", self._export_json, "TButton"), ("Importer des facteurs JSON", self._import_json, "TButton"), ("Réinitialiser", self._reset_all, "TButton")]:
+            btn = ttk.Button(actions, text=text, command=cmd, style=style)
+            btn.pack(fill="x", pady=(0, 8))
+            self._action_buttons.append(btn)
 
-        generate_btn = ttk.Button(actions, text="Générer le fichier Excel", style="Accent.TButton", command=self._start_generation)
-        export_btn = ttk.Button(actions, text="Exporter les facteurs en JSON", command=self._export_json)
-        import_btn = ttk.Button(actions, text="Importer des facteurs JSON", command=self._import_json)
-        reset_btn = ttk.Button(actions, text="Réinitialiser", command=self._reset_all)
-        generate_btn.grid(row=0, column=0, sticky="ew")
-        export_btn.grid(row=1, column=0, sticky="ew", pady=(8, 0))
-        import_btn.grid(row=2, column=0, sticky="ew", pady=(8, 0))
-        reset_btn.grid(row=3, column=0, sticky="ew", pady=(8, 0))
-        self._action_buttons.extend([generate_btn, export_btn, import_btn, reset_btn])
+        progress_box = ttk.LabelFrame(parent, text="Progression", style="Card.TLabelframe", padding=12)
+        progress_box.grid(row=3, column=0, sticky="ew", pady=(10, 0))
+        progress_box.grid_columnconfigure(0, weight=1)
+        self.progress_bar = ttk.Progressbar(progress_box, variable=self.progress_var, maximum=100, mode="determinate")
+        self.progress_bar.grid(row=0, column=0, sticky="ew")
 
-        summary = ttk.LabelFrame(parent, text="Résumé", style="Card.TLabelframe", padding=(14, 14, 14, 14))
-        summary.grid(row=2, column=0, sticky="ew")
-        summary.grid_columnconfigure(0, weight=1)
-        self.summary_text = ScrolledText(summary, wrap="word", height=10, font=("Consolas", 11), relief="solid", borderwidth=1)
-        self.summary_text.grid(row=0, column=0, sticky="ew")
-        self.summary_text.configure(state="disabled", highlightthickness=1, highlightbackground=BORDER, highlightcolor=ACCENT, padx=10, pady=10)
-
-        logbox = ttk.LabelFrame(parent, text="Journal", style="Card.TLabelframe", padding=(14, 14, 14, 14))
-        logbox.grid(row=3, column=0, sticky="ew", pady=(10, 0))
-        logbox.grid_columnconfigure(0, weight=1)
-        self.log_text = ScrolledText(logbox, wrap="word", height=8, font=("Consolas", 11), relief="solid", borderwidth=1)
-        self.log_text.grid(row=0, column=0, sticky="ew")
-        self.log_text.configure(state="disabled", highlightthickness=1, highlightbackground=BORDER, highlightcolor=ACCENT, padx=10, pady=10)
+        logbox = ttk.LabelFrame(parent, text="Journal", style="Card.TLabelframe", padding=12)
+        logbox.grid(row=4, column=0, sticky="ew", pady=(10, 0))
+        self.log_text = ScrolledText(logbox, wrap="word", height=8, font=("Consolas", 10))
+        self.log_text.pack(fill="both", expand=True)
+        self.log_text.configure(state="disabled")
 
     def _parse_levels(self, raw: str) -> list:
-        raw = raw.replace(";", "\n").replace(",", "\n").replace("|", "\n")
+        raw = raw.replace(";", "\n").replace(",", "\n").replace("\t", "\n")
         items = [line.strip() for line in raw.splitlines() if line.strip()]
         if len(items) < 2:
             raise ValueError("Au moins 2 niveaux sont requis.")
@@ -396,27 +303,21 @@ class PLEX2App(tk.Tk):
         for item in self.tree.get_children():
             self.tree.delete(item)
         for name, levels in self.factor_map.items():
-            levels_str = ", ".join(str(v) for v in levels)
-            self.tree.insert("", "end", iid=name, values=(name, levels_str, len(levels), self._factor_type(levels)))
+            self.tree.insert("", "end", iid=name, values=(name, ", ".join(str(v) for v in levels), len(levels), self._factor_type(levels)))
         self._refresh_summary()
 
     def _refresh_summary(self) -> None:
-        total_factors = len(self.factor_map)
         profile = [len(v) for v in self.factor_map.values()]
         full_runs = 1
         for p in profile:
             full_runs *= p
-        lines = [f"Application : {APP_NAME}", f"Facteurs : {total_factors}"]
+        lines = [f"Application : {APP_NAME}", f"Facteurs : {len(self.factor_map)}"]
         if profile:
-            lines.append(f"Profil de niveaux : {' x '.join(str(v) for v in profile)}")
-            lines.append(f"Factoriel complet potentiel : {full_runs}")
-            lines.append(f"Sortie : {Path(self.output_var.get()).name}")
-            # lines.append("LHS : calcul automatique")
+            lines += [f"Profil de niveaux : {' x '.join(str(v) for v in profile)}", f"Factoriel complet potentiel : {full_runs}", f"Sortie : {Path(self.output_var.get()).name}", ""]
+            for name, levels in self.factor_map.items():
+                lines.append(f"• {name} : {levels}")
         else:
             lines.append("Aucun facteur saisi.")
-        lines.append("")
-        for name, levels in self.factor_map.items():
-            lines.append(f"• {name} : {levels}")
         self.summary_text.configure(state="normal")
         self.summary_text.delete("1.0", "end")
         self.summary_text.insert("1.0", "\n".join(lines))
@@ -432,15 +333,12 @@ class PLEX2App(tk.Tk):
         except Exception as exc:
             messagebox.showerror(APP_NAME, str(exc))
             return
-
-        if self.selected_factor_name and self.selected_factor_name != name and self.selected_factor_name in self.factor_map:
+        if self.selected_factor_name and self.selected_factor_name != name:
             self.factor_map.pop(self.selected_factor_name, None)
-
         self.factor_map[name] = levels
         self.selected_factor_name = name
         self._refresh_tree()
         self.tree.selection_set(name)
-        self.tree.focus(name)
         self.status_var.set(f"Facteur « {name} » enregistré")
 
     def _on_tree_select(self, _event=None) -> None:
@@ -449,10 +347,9 @@ class PLEX2App(tk.Tk):
             return
         name = selection[0]
         self.selected_factor_name = name
-        levels = self.factor_map[name]
         self.factor_name_var.set(name)
         self.levels_text.delete("1.0", "end")
-        self.levels_text.insert("1.0", "\n".join(str(v) for v in levels))
+        self.levels_text.insert("1.0", "\n".join(str(v) for v in self.factor_map[name]))
 
     def _delete_selected_factor(self) -> None:
         selection = self.tree.selection()
@@ -462,22 +359,22 @@ class PLEX2App(tk.Tk):
         name = selection[0]
         self.factor_map.pop(name, None)
         self.selected_factor_name = None
-        self._refresh_tree()
         self._clear_editor()
-        self.status_var.set(f"Facteur « {name} » supprimé")
+        self._refresh_tree()
 
     def _clear_editor(self) -> None:
         self.selected_factor_name = None
         self.factor_name_var.set("")
         self.levels_text.delete("1.0", "end")
-        self.tree.selection_remove(self.tree.selection())
 
     def _choose_output(self) -> None:
+        output_path = Path(self.output_var.get())
         path = filedialog.asksaveasfilename(
             title="Choisir le fichier Excel de sortie",
             defaultextension=".xlsx",
             filetypes=[("Excel", "*.xlsx")],
-            initialfile=Path(self.output_var.get()).name,
+            initialdir=str(output_path.parent),
+            initialfile=output_path.name,
         )
         if path:
             self.output_var.set(path)
@@ -494,9 +391,7 @@ class PLEX2App(tk.Tk):
             return
         names = (list(string.ascii_uppercase) + [f"X{i}" for i in range(1, 200)])[:k]
         self.factor_map = {name: list(range(1, l + 1)) for name in names}
-        self.selected_factor_name = None
         self._refresh_tree()
-        self.status_var.set(f"{k} facteurs à {l} niveaux générés")
 
     def _load_example(self) -> None:
         self.factor_map = {
@@ -508,24 +403,16 @@ class PLEX2App(tk.Tk):
             "Dureté": [40.0, 60.0, 70.0],
             "Ra": [0.12, 0.8, 1.6],
         }
-        self.selected_factor_name = None
         self._refresh_tree()
-        self.status_var.set("Configuration par défaut chargée")
 
     def _export_json(self) -> None:
         if not self.factor_map:
             messagebox.showerror(APP_NAME, "Aucun facteur à exporter.")
             return
-        path = filedialog.asksaveasfilename(
-            title="Exporter les facteurs en JSON",
-            defaultextension=".json",
-            filetypes=[("JSON", "*.json")],
-            initialfile="facteurs_plex2.json",
-        )
-        if not path:
-            return
-        Path(path).write_text(json.dumps(self.factor_map, ensure_ascii=False, indent=2), encoding="utf-8")
-        self.status_var.set(f"Facteurs exportés : {path}")
+        path = filedialog.asksaveasfilename(title="Exporter les facteurs en JSON", defaultextension=".json", filetypes=[("JSON", "*.json")], initialfile="facteurs_plex2.json")
+        if path:
+            Path(path).write_text(json.dumps(self.factor_map, ensure_ascii=False, indent=2), encoding="utf-8")
+            self.status_var.set(f"Facteurs exportés : {path}")
 
     def _import_json(self) -> None:
         path = filedialog.askopenfilename(title="Importer des facteurs JSON", filetypes=[("JSON", "*.json")])
@@ -535,25 +422,14 @@ class PLEX2App(tk.Tk):
             data = json.loads(Path(path).read_text(encoding="utf-8"))
             if not isinstance(data, dict):
                 raise ValueError("Le JSON doit contenir un objet {facteur: [niveaux]}.")
-            clean: dict[str, list] = {}
-            for key, values in data.items():
-                if not isinstance(values, list) or len(values) < 2:
-                    raise ValueError(f"Facteur invalide : {key}")
-                clean[str(key)] = values
-            self.factor_map = clean
-            self.selected_factor_name = None
+            self.factor_map = {str(k): v for k, v in data.items() if isinstance(v, list) and len(v) >= 2}
             self._refresh_tree()
-            self.status_var.set(f"Facteurs importés : {path}")
         except Exception as exc:
             messagebox.showerror(APP_NAME, f"Import impossible :\n{exc}")
 
     def _reset_all(self) -> None:
         self.factor_map = {}
-        self.selected_factor_name = None
-        self.output_var.set(str(Path.cwd() / "PLEX2_plans.xlsx"))
-        self.max_full_var.set("30000")
-        self.uniform_k_var.set("5")
-        self.uniform_l_var.set("3")
+        self.progress_var.set(0)
         self._refresh_tree()
         self._clear_editor()
         self._clear_log()
@@ -570,26 +446,37 @@ class PLEX2App(tk.Tk):
         self.log_text.see("end")
         self.log_text.configure(state="disabled")
 
-    def _validate_inputs(self) -> tuple[dict, str, int]:
-        if len(self.factor_map) < 1:
+    def _validate_inputs(self) -> tuple[dict, str, int, bool, int]:
+        if not self.factor_map:
             raise ValueError("Ajoutez au moins un facteur.")
         output = self.output_var.get().strip()
         if not output:
             raise ValueError("Choisissez un fichier de sortie .xlsx.")
         if not output.lower().endswith(".xlsx"):
             output += ".xlsx"
-            self.output_var.set(output)
+        self.output_var.set(output)
         try:
-            max_full = int(self.max_full_var.get())
-            if max_full < 1:
+            max_plan_runs = int(self.max_plan_runs_var.get())
+            if max_plan_runs < 1:
                 raise ValueError
         except ValueError:
-            raise ValueError("Le seuil du factoriel complet doit être un entier positif.")
-        return self.factor_map.copy(), output, max_full
+            raise ValueError("Le seuil max de configurations par plan doit être un entier positif.")
+        try:
+            spatial_visualization_max_runs = int(self.spatial_visualization_max_runs_var.get())
+            if spatial_visualization_max_runs < 1:
+                raise ValueError
+        except ValueError:
+            raise ValueError("Le nombre maximal d'essais pour la visualisation doit être un entier positif.")
+        return (
+            self.factor_map.copy(),
+            output,
+            max_plan_runs,
+            bool(self.enable_spatial_visualization_var.get()),
+            spatial_visualization_max_runs,
+        )
 
     def _set_busy(self, busy: bool) -> None:
-        cursor = "watch" if busy else ""
-        self.configure(cursor=cursor)
+        self.configure(cursor="watch" if busy else "")
         state = tk.DISABLED if busy else tk.NORMAL
         for button in self._action_buttons:
             try:
@@ -600,23 +487,59 @@ class PLEX2App(tk.Tk):
 
     def _start_generation(self) -> None:
         try:
-            factors, output, max_full = self._validate_inputs()
+            (
+                factors,
+                output,
+                max_plan_runs,
+                enable_spatial_visualization,
+                spatial_visualization_max_runs,
+            ) = self._validate_inputs()
         except Exception as exc:
             messagebox.showerror(APP_NAME, str(exc))
             return
-
+        self.progress_var.set(0)
+        self.status_var.set("Génération en cours... 0%")
         self._append_log("Lancement de la génération...")
-        self.status_var.set("Génération en cours...")
         self._set_busy(True)
-
-        worker = threading.Thread(target=self._generate_worker, args=(factors, output, max_full), daemon=True)
+        worker = threading.Thread(
+            target=self._generate_worker,
+            args=(
+                factors,
+                output,
+                max_plan_runs,
+                enable_spatial_visualization,
+                spatial_visualization_max_runs,
+            ),
+            daemon=True,
+        )
         worker.start()
 
-    def _generate_worker(self, factors: dict, output: str, max_full: int) -> None:
+    def _progress_callback(self, percent: int, message: str = "Génération en cours") -> None:
+        self.log_queue.put(("progress", json.dumps({"percent": int(percent), "message": message}, ensure_ascii=False)))
+
+    def _generate_worker(
+        self,
+        factors: dict,
+        output: str,
+        max_plan_runs: int,
+        enable_spatial_visualization: bool,
+        spatial_visualization_max_runs: int,
+    ) -> None:
         try:
-            Path(output).parent.mkdir(parents=True, exist_ok=True)
-            summary_rows = build_doe_explorer(factors, outfile=output, max_full_factorial_runs=max_full, include_lhs=True)
-            self.log_queue.put(("success", json.dumps({"output": output, "rows": summary_rows}, ensure_ascii=False)))
+            output_path = Path(output)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            summary_rows = build_doe_explorer(
+                factors,
+                outfile=output,
+                max_plan_runs=max_plan_runs,
+                include_lhs=True,
+                enable_spatial_visualization=enable_spatial_visualization,
+                spatial_visualization_max_runs=spatial_visualization_max_runs,
+                progress_callback=self._progress_callback,
+            )
+            json_output = str(output_path.with_suffix(".json"))
+            Path(json_output).write_text(json.dumps(factors, ensure_ascii=False, indent=2), encoding="utf-8")
+            self.log_queue.put(("success", json.dumps({"output": output, "json_output": json_output, "rows": summary_rows}, ensure_ascii=False)))
         except Exception as exc:
             self.log_queue.put(("error", str(exc)))
 
@@ -624,18 +547,27 @@ class PLEX2App(tk.Tk):
         try:
             while True:
                 kind, payload = self.log_queue.get_nowait()
-                self._set_busy(False)
-                if kind == "success":
+                if kind == "progress":
                     data = json.loads(payload)
-                    rows = data["rows"] or []
+                    pct = max(0, min(100, int(data.get("percent", 0))))
+                    msg = data.get("message", "Génération en cours")
+                    self.progress_var.set(pct)
+                    self.status_var.set(f"{msg}... {pct}%")
+                elif kind == "success":
+                    self._set_busy(False)
+                    self.progress_var.set(100)
+                    data = json.loads(payload)
+                    rows = data.get("rows") or []
                     kept = [r for r in rows if not str(r.get("Notes", "")).startswith("⚠ OMIS")]
                     skipped = [r for r in rows if str(r.get("Notes", "")).startswith("⚠ OMIS")]
                     self._append_log(f"Fichier généré : {data['output']}")
+                    self._append_log(f"Facteurs JSON exportés : {data['json_output']}")
                     self._append_log(f"Plans disponibles : {len(kept)}")
                     self._append_log(f"Plans omis : {len(skipped)}")
-                    self.status_var.set(f"Terminé - {Path(data['output']).name}")
-                    messagebox.showinfo(APP_NAME, f"Fichier Excel généré avec succès :\n{data['output']}")
+                    self.status_var.set(f"Terminé - {Path(data['output']).name} - 100%")
+                    messagebox.showinfo(APP_NAME, f"Fichier Excel généré avec succès :\n{data['output']}\n\nFacteurs JSON exportés :\n{data['json_output']}")
                 else:
+                    self._set_busy(False)
                     self._append_log(f"Erreur : {payload}")
                     self.status_var.set("Erreur")
                     messagebox.showerror(APP_NAME, payload)
