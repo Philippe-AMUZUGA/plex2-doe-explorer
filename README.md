@@ -3,7 +3,7 @@
 Application Windows pour explorer et exporter des plans d'expériences vers Excel, avec interface graphique.
 
 - **Repository** : `plex2-doe-explorer`
-- **Auteur** : Philipp AMUZUGA
+- **Auteur** : Philippe AMUZUGA
 - **Version stable** : 1.0
 - **Licence** : AGPLv3
 
